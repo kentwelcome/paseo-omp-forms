@@ -1,8 +1,46 @@
 # OMP Forms
 
-OMP Forms adds a native single-choice card for one named radio group sent by the Oh My Pi `ask` tool. The selected value goes back to the waiting tool, not just to the chat timeline. Unsupported forms are canceled instead of leaving OMP waiting.
+Answer [Oh My Pi (OMP)](https://github.com/can1357/oh-my-pi) radio-button questions directly in [Paseo](https://paseo.sh/) chat.
 
-Choose **Oh My Pi (Forms)** in a new chat. The plugin does not replace the bundled provider, change existing chats, or support arbitrary HTML forms. See [architecture](architecture.md) for the request lifecycle and version baseline.
+On Paseo Desktop 0.17.4 with OMP 19.2.1, the bundled OMP provider could show **Question** without any choices while OMP’s `ask` tool waited for an answer.
+
+OMP Forms shows a selectable card instead. Pick an option and submit it to send its value back to `ask` so the agent can continue. Dismiss the card to cancel without answering.
+
+## Should I install it?
+
+- **Try it** if you use Oh My Pi in Paseo, see a question with no choices, and want to answer single-choice questions without typing a reply.
+- **Skip it** if your current provider already shows the choices, you don’t use Oh My Pi, or you need checkboxes, text fields, or multiple questions in one form. A no-install workaround is to ask the agent to list numbered options in chat and wait for your reply.
+
+The plugin supports one group of radio buttons and cancels unsupported forms. It adds a separate **Oh My Pi (Forms)** provider for new chats. It neither replaces the bundled provider nor fixes a chat that is already waiting.
+
+## Try it from source
+
+Verified with Paseo Desktop 0.17.4 on macOS and OMP 19.2.1. Install `omp` on the machine running the Paseo daemon and make sure it’s on the daemon’s `PATH`. The source setup below uses Node.js 22.13 or newer and npm.
+
+Paseo plugins run as trusted, unsandboxed code. Enable plugins in **Settings → Plugins** on the target daemon only if you trust the code you’re installing.
+
+```sh
+git clone https://github.com/kentwelcome/paseo-omp-forms.git
+cd paseo-omp-forms/plugin
+npm ci --ignore-scripts
+paseo plugin install "$PWD"
+```
+
+Start a new chat with **Oh My Pi (Forms)**. To try it, send this prompt:
+
+```text
+Use the ask tool with the HTML below. When it returns, tell me the exact value it returned.
+
+<form>
+  <fieldset>
+    <legend>Who should see this?</legend>
+    <label><input type="radio" name="visibility" value="team_scope"> Team</label>
+    <label><input type="radio" name="visibility" value="private_local"> Only me</label>
+  </fieldset>
+</form>
+```
+
+Select **Only me** and click **Submit**. The tool should return `private_local`, and the agent should continue. To test cancellation, ask again and click **Dismiss**. The tool should stop waiting without returning an answer.
 
 ## Local development
 
