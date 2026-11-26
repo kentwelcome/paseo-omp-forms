@@ -30,14 +30,29 @@ export function parseRadioForm(html: string) {
   const fragment = parseFragment(html, { onParseError: () => { invalid = true; } });
   if (invalid) return undefined;
 
-  const radios: { element: Element; wrapper?: Element; insideForm?: boolean }[] = [];
+  // Match OMP's scope: ignore nodes outside the first HTML form, when present.
+  let root: DefaultTreeAdapterTypes.DocumentFragment | Element = fragment;
+  const outside = fragment.childNodes.slice().reverse();
+  while (outside.length > 0) {
+    const node = outside.pop()!;
+    if (!("tagName" in node) || node.namespaceURI !== HTML) continue;
+    if (node.tagName === "form") {
+      if (root !== fragment || attr(node, "hidden") !== undefined) return undefined;
+      root = node;
+      continue;
+    }
+    for (let index = node.childNodes.length - 1; index >= 0; index--) {
+      outside.push(node.childNodes[index]!);
+    }
+  }
+
+  const radios: { element: Element; wrapper?: Element }[] = [];
   const labels = new Map<string, Element>();
   const usedLabels = new Set<Element>();
   const legends: string[] = [];
   const prompt: string[] = [];
-  let hasForm = false;
-  const stack: { node: Child; wrapper?: Element; legend?: boolean; insideForm?: boolean }[] =
-    fragment.childNodes.slice().reverse().map((node) => ({ node }));
+  const stack: { node: Child; wrapper?: Element; legend?: boolean }[] =
+    root.childNodes.slice().reverse().map((node) => ({ node }));
 
   while (stack.length > 0) {
     const item = stack.pop()!;
@@ -50,14 +65,11 @@ export function parseRadioForm(html: string) {
     }
     const { tagName } = node;
     if (node.namespaceURI !== HTML || attr(node, "hidden") !== undefined) return undefined;
-    if (tagName === "form") {
-      if (hasForm) return undefined;
-      hasForm = true;
-    }
     if (tagName === "input") {
-      if (attr(node, "type")?.toLowerCase() !== "radio" || attr(node, "disabled") !== undefined ||
-          attr(node, "form") !== undefined || radios.length === MAX_OPTIONS) return undefined;
-      radios.push({ element: node, wrapper, insideForm: item.insideForm });
+      if (item.legend || attr(node, "type")?.toLowerCase() !== "radio" ||
+          attr(node, "disabled") !== undefined || attr(node, "form") !== undefined ||
+          radios.length === MAX_OPTIONS) return undefined;
+      radios.push({ element: node, wrapper });
       continue;
     }
     if (tagName === "label") {
@@ -77,7 +89,6 @@ export function parseRadioForm(html: string) {
         node: node.childNodes[index]!,
         wrapper: tagName === "label" ? node : wrapper,
         legend: item.legend || tagName === "legend",
-        insideForm: item.insideForm || tagName === "form",
       });
     }
   }
@@ -87,8 +98,7 @@ export function parseRadioForm(html: string) {
   const ids = new Set<string>();
   const values = new Set<string>();
   const options: { label: string; value: string }[] = [];
-  for (const { element, wrapper, insideForm } of radios) {
-    if (hasForm && !insideForm) return undefined;
+  for (const { element, wrapper } of radios) {
     const id = attr(element, "id");
     if (id && ids.has(id)) return undefined;
     if (id) ids.add(id);
@@ -100,8 +110,11 @@ export function parseRadioForm(html: string) {
     const labelElement = wrapper ?? explicit;
     if (labelElement && usedLabels.has(labelElement)) return undefined;
     if (labelElement) usedLabels.add(labelElement);
-    const label = cleanText(labelElement ? labelText(labelElement) :
-      (attr(element, "aria-label") ?? attr(element, "title") ?? ""));
+    let label = labelElement ? cleanText(labelText(labelElement)) : "";
+    // An explicit label remains authoritative in OMP even if it has no text.
+    if (!label && !explicit) {
+      label = cleanText(attr(element, "aria-label") ?? attr(element, "title") ?? "");
+    }
     const value = attr(element, "value") ?? "on";
     if (attr(element, "name") !== name || !label || label.length > MAX_TEXT ||
         value.length > MAX_TEXT || values.has(value)) return undefined;

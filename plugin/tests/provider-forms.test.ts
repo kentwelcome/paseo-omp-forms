@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,15 +9,20 @@ import {
   createHarness, establishTerminalOwnership, openSession, sessionAt, startPrompt,
 } from "./helpers/provider-harness";
 
-const HTML = `<form><fieldset><legend>Choose visibility</legend>
-  <label><input type="radio" name="visible" value="workspace" checked>Workspace</label>
+const HTML = `<label for="private">Outside the form</label><form><fieldset><legend>Choose visibility</legend>
+  <label><input type="radio" name="visible" value="workspace" checked aria-label="Workspace"></label>
   <input id="private" type="radio" name="visible" value="private &amp; local" />
   <label for="private"><strong>Only me</strong></label>
 </fieldset></form>`;
 
 async function formSession() {
   const { connection, events, runtime } = await createHarness();
-  await openSession(connection, events);
+  try {
+    await openSession(connection, events);
+  } catch (error) {
+    await connection.close();
+    throw error;
+  }
   const session = sessionAt(runtime);
   const emit = (id: string, html = HTML) => session.emit(OmpRuntimeEventSchema.parse({
     type: "extension_ui_request", method: "form", id, html,
@@ -118,11 +123,32 @@ describe("OMP radio forms", () => {
     }
   });
 
+  test("uses in-form accessible labels, not detached labels outside the form", async () => {
+    const { events, connection, publish } = await formSession();
+    try {
+      publish("scoped-labels", `<label for="option">Wrong label</label><form>
+        <label><input id="option" type="radio" name="choice" value="one" aria-label="First"></label>
+        <label><input type="radio" name="choice" value="two">Second</label>
+      </form>`);
+      expect(events.findLast((event) => event.type === "session.permission")).toMatchObject({
+        request: { input: { questions: [{ options: [{ label: "First" }, { label: "Second" }] }] } },
+      });
+    } finally {
+      await connection.close();
+    }
+  });
+
   test.each([
     HTML.replace('name="visible" value="private', 'name="other" value="private'),
     HTML.replace('</fieldset>', '<textarea name="extra"></textarea></fieldset>'),
     HTML.replace('</fieldset>', '<script>throw new Error()</script></fieldset>'),
     HTML.replace('<label><input type="radio"', '<label for="wrapped"><input id="wrapped" type="radio"'),
+    HTML.replace('value="private &amp; local"', 'value="private &amp; local" aria-label="Private"')
+      .replace("<strong>Only me</strong>", ""),
+    `<form><fieldset><legend>Question
+      <label><input type="radio" name="choice" value="missing">Not an OMP option</label></legend>
+      <label><input type="radio" name="choice" value="present">An OMP option</label>
+    </fieldset></form>`,
     `<form>${Array.from({ length: 40 }, (_, index) =>
       `<label><input type="radio" name="group" value="${index}">${"漢".repeat(900)}</label>`
     ).join("")}</form>`,
@@ -142,8 +168,11 @@ describe("OMP radio forms", () => {
   test.skipIf(process.env.OMP_FORMS_WIRE !== "1")(
     "OMP 19.2.1 accepts the provider response for the HTML it sent",
     async () => {
+      expect(execFileSync("omp", ["--version"], { encoding: "utf8", timeout: 3_000 }).trim())
+        .toBe("omp/19.2.1");
       const cwd = await mkdtemp(join(tmpdir(), "omp-forms-wire-"));
-      await writeFile(join(cwd, "models.yml"), `
+      try {
+        await writeFile(join(cwd, "models.yml"), `
 providers:
   wire-only:
     baseUrl: http://127.0.0.1:1/v1
@@ -156,8 +185,8 @@ providers:
         contextWindow: 8192
         maxTokens: 512
 `);
-      const extension = join(cwd, "form.ts");
-      await writeFile(extension, `
+        const extension = join(cwd, "form.ts");
+        await writeFile(extension, `
         export default function (pi) {
           pi.on("input", async (_event, ctx) => {
             const result = await ctx.ui.formDialog(${JSON.stringify(HTML)});
@@ -165,48 +194,53 @@ providers:
             return { action: "handled" };
           });
         }
-      `);
-      const child = spawn("omp", [
-        "--mode", "rpc-ui", "--no-session", "--no-extensions", "--no-context-files",
-        "--model", "wire-only/unreachable", "-e", extension,
-      ], {
-        cwd, env: { ...process.env, PI_CODING_AGENT_DIR: cwd },
-        stdio: ["pipe", "pipe", "ignore"],
-        signal: AbortSignal.timeout(10_000),
-      });
-      const { promise: exited, resolve: markExited } = Promise.withResolvers<void>();
-      child.once("close", markExited);
-      child.on("error", () => child.stdout.destroy());
-      const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
-      const waitFor = async (match: (frame: Record<string, unknown>) => boolean) => {
-        for (;;) {
-          const line = await lines.next();
-          if (line.done) throw new Error("OMP exited before emitting the expected frame");
-          const frame = JSON.parse(line.value) as Record<string, unknown>;
-          if (match(frame)) return frame;
-        }
-      };
-      const { connection, events, session } = await formSession();
-      try {
-        await waitFor((frame) => frame.type === "ready");
-        child.stdin.write(JSON.stringify({ type: "prompt", id: "smoke", message: "wire replay" }) + "\n");
-        const nativeRequest = await waitFor((frame) => frame.type === "extension_ui_request" && frame.method === "form");
-        session.emit(OmpRuntimeEventSchema.parse(nativeRequest));
-        const card = events.findLast((item) => item.type === "session.permission");
-        if (card?.type !== "session.permission") throw new Error("Expected a form card");
-        await connection.send({
-          type: "session.permission", sessionId: "session-1", permissionId: card.request.id,
-          response: { behavior: "allow", updatedInput: { answers: { "Choose visibility": "Only me" } } },
+        `);
+        const child = spawn("omp", [
+          "--mode", "rpc-ui", "--no-session", "--no-extensions", "--no-context-files",
+          "--model", "wire-only/unreachable", "-e", extension,
+        ], {
+          cwd, env: { ...process.env, PI_CODING_AGENT_DIR: cwd },
+          stdio: ["pipe", "pipe", "ignore"],
+          signal: AbortSignal.timeout(10_000),
         });
-        const response = OmpExtensionUiResponseSchema.parse(session.extensionUiResponses.at(-1));
-        child.stdin.write(JSON.stringify(response) + "\n");
-        const result = await waitFor((frame) => frame.type === "extension_ui_request" &&
-          frame.method === "notify" && String(frame.message).startsWith("FORM_WIRE_RESULT:"));
-        expect(result.message).toBe('FORM_WIRE_RESULT:{"visible":"private & local"}');
+        const { promise: exited, resolve: markExited } = Promise.withResolvers<void>();
+        child.once("close", markExited);
+        child.on("error", () => child.stdout.destroy());
+        try {
+          const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+          const waitFor = async (match: (frame: Record<string, unknown>) => boolean) => {
+            for (;;) {
+              const line = await lines.next();
+              if (line.done) throw new Error("OMP exited before emitting the expected frame");
+              const frame = JSON.parse(line.value) as Record<string, unknown>;
+              if (match(frame)) return frame;
+            }
+          };
+          const { connection, events, session } = await formSession();
+          try {
+            await waitFor((frame) => frame.type === "ready");
+            child.stdin.write(JSON.stringify({ type: "prompt", id: "smoke", message: "wire replay" }) + "\n");
+            const nativeRequest = await waitFor((frame) => frame.type === "extension_ui_request" && frame.method === "form");
+            session.emit(OmpRuntimeEventSchema.parse(nativeRequest));
+            const card = events.findLast((item) => item.type === "session.permission");
+            if (card?.type !== "session.permission") throw new Error("Expected a form card");
+            await connection.send({
+              type: "session.permission", sessionId: "session-1", permissionId: card.request.id,
+              response: { behavior: "allow", updatedInput: { answers: { "Choose visibility": "Only me" } } },
+            });
+            const response = OmpExtensionUiResponseSchema.parse(session.extensionUiResponses.at(-1));
+            child.stdin.write(JSON.stringify(response) + "\n");
+            const result = await waitFor((frame) => frame.type === "extension_ui_request" &&
+              frame.method === "notify" && String(frame.message).startsWith("FORM_WIRE_RESULT:"));
+            expect(result.message).toBe('FORM_WIRE_RESULT:{"visible":"private & local"}');
+          } finally {
+            await connection.close();
+          }
+        } finally {
+          child.kill();
+          await exited;
+        }
       } finally {
-        child.kill();
-        await connection.close();
-        await exited;
         await rm(cwd, { recursive: true, force: true });
       }
     },
