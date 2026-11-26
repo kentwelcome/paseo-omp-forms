@@ -1,0 +1,14 @@
+# Local Recce configuration
+/recce.yml
+
+# Local engineering handoff
+/HANDOFF.md
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Editor temporary files
+*.swp
+*.swo
+*~
