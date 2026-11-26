@@ -1,14 +1,16 @@
 # OMP Forms
 
-Answer [Oh My Pi (OMP)](https://github.com/can1357/oh-my-pi) radio-button questions directly in [Paseo](https://paseo.sh/) chat.
+A workaround for answering [Oh My Pi (OMP)](https://github.com/can1357/oh-my-pi) radio-button questions in [Paseo](https://paseo.sh/) 0.17.4.
 
 On Paseo Desktop 0.17.4 with OMP 19.2.1, the bundled OMP provider could show **Question** without any choices while OMP’s `ask` tool waited for an answer.
+
+[Paseo PR #10862](https://github.com/getpaseo/paseo/pull/10862) fixed this in the bundled OMP provider. Use the bundled provider if your Paseo release includes that fix; you don’t need this plugin.
 
 OMP Forms shows a selectable card instead. Pick an option and submit it to send its value back to `ask` so the agent can continue. Dismiss the card to cancel without answering.
 
 ## Should I install it?
 
-- **Try it** if you use Oh My Pi in Paseo, see a question with no choices, and want to answer single-choice questions without typing a reply.
+- **Try it** if you’re on Paseo 0.17.4, see an OMP question with no choices, and can start a new chat with the workaround provider.
 - **Skip it** if your current provider already shows the choices, you don’t use Oh My Pi, or you need checkboxes, text fields, or multiple questions in one form. A no-install workaround is to ask the agent to list numbered options in chat and wait for your reply.
 
 The plugin supports one group of radio buttons and cancels unsupported forms. It adds a separate **Oh My Pi (Forms)** provider for new chats. It neither replaces the bundled provider nor fixes a chat that is already waiting.
