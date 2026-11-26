@@ -1,0 +1,247 @@
+import { createHash } from "node:crypto";
+import { homedir } from "node:os";
+import type { ProviderRegistration, ProviderStatus } from "@getpaseo/plugin/server/provider";
+import { z } from "zod";
+import type { OmpBrowserAuthorizationRegistry } from "../mcp-browser";
+import type { OmpOperationalFailureReporter } from "../operational-failure-diagnostics";
+import { probeOmpAvailability } from "../provider-diagnostics";
+import type { OmpSubagentControlRegistry } from "../subagents";
+import { mergeOmpInheritedEnvironmentNames } from "./config-normalization";
+import { createOmpConnection, OmpNativeSessionReservations } from "./connection";
+import type { OmpMcpConnector } from "./host-tools";
+import { OmpRpcRuntime, type OmpRuntime } from "./omp-rpc";
+import type { OmpProtocolViolationDiagnostic } from "./omp-rpc-protocol";
+import { parseOmpProviderOptions } from "./provider-options";
+import { boundedJsonBytes } from "./security";
+import { OmpSessionLimit } from "./session-limit";
+import { OmpProviderOptionsSchema } from "./settings";
+import type { OmpTimelineScheduler } from "./timeline-projector";
+
+type ProviderCatalogOptionsCompat = {
+  scope: "global" | "workspace";
+  cwd?: string;
+  force?: boolean;
+  providerOptions?: Readonly<Record<string, unknown>>;
+  settings?: Readonly<Record<string, unknown>>;
+};
+type ProviderAvailabilityCompat = {
+  status: "missing" | "unrunnable" | "incompatible" | "available";
+  diagnostic?: string;
+};
+type ProviderRegistrationCompat = Omit<
+  ProviderRegistration,
+  "getCatalogCacheKey" | "checkAvailability"
+> & {
+  providerOptionsSchema?: typeof OmpProviderOptionsSchema;
+  getCatalogCacheKey?(
+    options: ProviderCatalogOptionsCompat,
+    context?: { timeoutMs?: number },
+  ): Promise<string | undefined>;
+  checkAvailability?(
+    options: ProviderCatalogOptionsCompat,
+    context?: { timeoutMs?: number },
+  ): Promise<ProviderAvailabilityCompat>;
+};
+
+const STATUS_CACHE_TTL_MS = 30_000;
+
+/**
+ * The 0.11 host calls `status` before every create, resume, and draft request and passes only
+ * the daemon-resolved launch, never per-agent `providerOptions`. Only a missing executable is
+ * definitive for the plugin-owned default launch; slow, failing, or unrecognized probes stay
+ * available with a diagnostic so load or a differently launched agent is never refused.
+ */
+function toProviderStatus(availability: ProviderAvailabilityCompat): ProviderStatus {
+  if (availability.status === "available") return { available: true };
+  if (availability.status === "missing") {
+    return {
+      available: false,
+      diagnostic: availability.diagnostic ?? "OMP executable was not found",
+    };
+  }
+  return {
+    available: true,
+    diagnostic: availability.diagnostic ?? `OMP launch probe reported ${availability.status}`,
+  };
+}
+
+/**
+ * Share one bounded probe across the host's frequent status calls. Only an available result is
+ * kept for the interval; an unavailable or failed result is shared by in-flight callers and then
+ * dropped, so installing the executable is picked up by the very next host call.
+ */
+export function createOmpStatus(
+  probe: () => Promise<ProviderAvailabilityCompat>,
+): () => Promise<ProviderStatus> {
+  let cached: { expiresAt: number; result: Promise<ProviderStatus> } | undefined;
+  return () => {
+    const now = Date.now();
+    if (cached && cached.expiresAt > now) return cached.result;
+    const entry = {
+      expiresAt: now + STATUS_CACHE_TTL_MS,
+      result: probe().then(toProviderStatus),
+    };
+    cached = entry;
+    entry.result.then(
+      (status) => {
+        if (!status.available && cached === entry) cached = undefined;
+      },
+      () => {
+        if (cached === entry) cached = undefined;
+      },
+    );
+    return entry.result;
+  };
+}
+
+const CAPABILITIES = [
+  "prompt.message",
+  "prompt.command",
+  "prompt.image",
+  "prompt.steer",
+  "session.can_stop_runtime",
+  "session.configure",
+  "session.list",
+  "session.persistence",
+  "session.subsession",
+  "session.revert.conversation",
+  "permission",
+  "timeline.plugin",
+] as const;
+const ConnectRequestSchema = z.object({
+  versions: z.array(z.number().int().positive().max(16)).min(1).max(8),
+  capabilities: z.array(z.string().min(1).max(64)).max(32),
+});
+
+export interface OmpProviderOptions {
+  runtime?: OmpRuntime;
+  timelineScheduler?: OmpTimelineScheduler;
+  replayTimeoutMs?: number;
+  environment?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  /** Fixed, non-secret profile/store identity for providers whose configuration is server-owned. */
+  catalogIdentity?: Readonly<Record<string, string>>;
+  mcpInitializationTimeoutMs?: number;
+  mcpConnector?: OmpMcpConnector;
+  browserAuthorizationRegistry?: OmpBrowserAuthorizationRegistry;
+  /** Shared by every provider of one plugin instance; each provider has its own otherwise. */
+  sessionLimit?: OmpSessionLimit;
+  reportProtocolViolation?: (diagnostic: OmpProtocolViolationDiagnostic) => void | Promise<void>;
+  reportOperationalFailure?: OmpOperationalFailureReporter;
+  availabilityProbe?: (
+    options: ProviderCatalogOptionsCompat,
+    timeoutMs: number | undefined,
+  ) => Promise<ProviderAvailabilityCompat>;
+  resolveHostInheritEnv?: () => Promise<readonly string[]>;
+  subagentControlRegistry?: OmpSubagentControlRegistry;
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.entries(value)
+      .filter(([, child]) => child !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+export function createOmpProvider(options: OmpProviderOptions = {}): ProviderRegistrationCompat {
+  const runtime =
+    options.runtime ??
+    new OmpRpcRuntime({
+      environment: options.environment,
+      reportProtocolViolation: options.reportProtocolViolation,
+    });
+  const nativeReservations = new OmpNativeSessionReservations();
+  const sessionLimit = options.sessionLimit ?? new OmpSessionLimit();
+  const platform = options.platform ?? process.platform;
+  const checkAvailability: NonNullable<ProviderRegistrationCompat["checkAvailability"]> = async (
+    catalogOptions,
+    context,
+  ) => {
+    if (options.availabilityProbe) {
+      return await options.availabilityProbe(catalogOptions, context?.timeoutMs);
+    }
+    const providerOptions = parseOmpProviderOptions(catalogOptions.providerOptions);
+    const environment = { ...(options.environment ?? process.env), ...providerOptions.env };
+    const configuredCommand: readonly [string, ...string[]] = providerOptions.command?.[0]
+      ? [providerOptions.command[0], ...providerOptions.command.slice(1)]
+      : [environment.OMP_COMMAND || "omp"];
+    return await probeOmpAvailability({
+      command: configuredCommand,
+      cwd:
+        catalogOptions.scope === "workspace" && catalogOptions.cwd ? catalogOptions.cwd : homedir(),
+      environment,
+      platform,
+      timeoutMs: context?.timeoutMs,
+    });
+  };
+  return {
+    id: "omp-plugin",
+    label: "OMP Plugin",
+    description: "Direct plugin provider for OMP's rpc-ui protocol",
+    icon: "shared/omp.svg",
+    providerOptionsSchema: OmpProviderOptionsSchema,
+    async getCatalogCacheKey(catalogOptions) {
+      const providerOptions = parseOmpProviderOptions(catalogOptions.providerOptions);
+      const inheritEnv = mergeOmpInheritedEnvironmentNames(
+        (await options.resolveHostInheritEnv?.()) ?? [],
+        providerOptions.inheritEnv,
+      );
+      // Profile providers cannot safely hash explicit environment values because they may be
+      // credentials. Disable sharing for that case; otherwise retain every normalized option
+      // that can change discovery alongside the fixed, non-secret store identity.
+      if (options.catalogIdentity && Object.keys(providerOptions.env ?? {}).length > 0) return;
+      const identity = {
+        scope: catalogOptions.scope,
+        ...(catalogOptions.scope === "workspace" ? { cwd: catalogOptions.cwd } : {}),
+        ...(options.catalogIdentity ? { store: options.catalogIdentity } : {}),
+        providerOptions: { ...providerOptions, ...(inheritEnv ? { inheritEnv } : {}) },
+        settings: catalogOptions.settings ?? {},
+        defaultCommand: (options.environment ?? process.env).OMP_COMMAND ?? "omp",
+      };
+      if (
+        boundedJsonBytes(identity, 2 * 1024 * 1024, 4_096, 256 * 1024, 16_384) ===
+        Number.POSITIVE_INFINITY
+      ) {
+        throw new Error("OMP catalog identity is too large");
+      }
+      return createHash("sha256").update(stableJson(identity)).digest("base64url");
+    },
+    checkAvailability,
+    status: createOmpStatus(() => checkAvailability({ scope: "global" })),
+    async connect(request) {
+      if (boundedJsonBytes(request, 8 * 1024, 32, 256, 64) === Number.POSITIVE_INFINITY) {
+        throw new Error("OMP provider received an oversized connection request");
+      }
+      const parsed = ConnectRequestSchema.safeParse(request);
+      if (!parsed.success || !parsed.data.versions.includes(1)) {
+        throw new Error("OMP provider requires a valid provider protocol version 1 request");
+      }
+      const requestedCapabilities = new Set(parsed.data.capabilities);
+      const capabilities = CAPABILITIES.filter((capability) =>
+        requestedCapabilities.has(capability),
+      );
+      await sessionLimit.refresh();
+      return createOmpConnection(
+        runtime,
+        capabilities,
+        options.timelineScheduler,
+        options.environment,
+        nativeReservations,
+        options.mcpConnector,
+        options.mcpInitializationTimeoutMs,
+        options.replayTimeoutMs,
+        options.browserAuthorizationRegistry,
+        undefined,
+        options.reportOperationalFailure,
+        options.resolveHostInheritEnv,
+        sessionLimit,
+        options.subagentControlRegistry,
+      );
+    },
+  };
+}

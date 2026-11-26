@@ -2,16 +2,16 @@
 
 ## Current state
 
-This is a documentation-only checkout. Bundled Paseo 0.17.4 did not register OMP 19.2.1's `form` request as a question the user could answer. No fork, parser, transport changes, or acceptance tests exist yet.
+Bundled Paseo 0.17.4 did not register OMP 19.2.1's `form` request as a question the user could answer. The local plugin under `plugin/` registers `omp-forms` separately from both bundled `omp` and the community provider’s `omp-plugin`.
 
-## Proposed boundaries
+## Provider boundaries
 
-The fork starts from the community provider matching 5.8.1. The handoff proposes plugin ID `paseo-omp-forms` and provider ID `omp-forms`; availability is unverified. The bundled and original community provider remain separate.
+The server-side provider is derived from [community OMP provider 5.8.1](https://github.com/omercnet/paseo-plugins/tree/daddcfc1fa3a46a9789d0d5131b1b8df29c26c22/paseo-omp). The fork includes its provider dependency closure and [MIT license](plugin/LICENSE), not its client panels or profile registrations.
 
 1. OMP emits an `extension_ui_request` with method `form`, HTML, and a request ID.
-2. The fork validates a single named radio group without executing HTML. Each display label maps to its original machine value.
-3. The provider publishes a native Paseo single-choice question, owns the pending request, and retains the original field name, mapping, and request ID.
-4. Selection responds according to the version-matched OMP form contract. Dismissal, interruption, or unsupported input terminates the request without submitting an answer; stale UI must not affect a later request.
+2. `radio-form.ts` validates a single named radio group with distinct values. It treats HTML as data and rejects unsupported controls and forms that exceed the card budget.
+3. `session-permissions.ts` publishes a native Paseo single-choice question. The session owns its request ID and maps displayed choices back to the original field and value.
+4. `omp-rpc-protocol.ts` encodes the response as `{ data: { [field]: value } }` with the original request ID. Dismissal, interruption, or unsupported input cancels without submitting an answer; stale cards cannot affect later requests.
 
 The first acceptance boundary is deterministic request replay. The second is an authorized fresh chat explicitly using the new provider. A visible card alone does not verify completion.
 

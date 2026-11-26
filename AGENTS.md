@@ -1,10 +1,10 @@
 # Repository guidelines
 
-OMP Forms is a proposed Paseo provider fork; this checkout has no plugin code, dependency manifest, configured runtime, or build, test, and lint commands. Do not claim planned behavior is implemented. [README.md](README.md) indexes the separate workflow guides; read relevant [lessons](LEARNING.md) before planning.
+OMP Forms is a separate server-side Paseo provider for one named OMP radio group. Source, manifests, and tests live under `plugin/`. [README.md](README.md) documents setup and checks and indexes the workflow guides; read relevant [lessons](LEARNING.md) before planning.
 
 ## Architecture and implementation
 
-See [architecture.md](architecture.md) for the proposed request and response flow and [ADR guidance](guidelines/architecture-decisions.md) for decision ownership. Record accepted decisions under `docs/adr/` when one qualifies. Start from the community provider source matching 5.8.1 and verify the wire contract against OMP 19.2.1. Preserve existing source conventions once imported. Parse HTML as data only; maintain request identity through selection and cleanup. Do not change the bundled provider, migrate chats, or address bash output rendering.
+See [architecture.md](architecture.md) for the request and response flow and [ADR guidance](guidelines/architecture-decisions.md) for decision ownership. Record accepted decisions under `docs/adr/` when one qualifies. The provider derives from the community provider 5.8.1 and uses the OMP 19.2.1 form contract. Parse HTML as data only; maintain request identity through selection and cleanup. Do not change the bundled provider, migrate chats, or address bash output rendering.
 
 ## Verification and authority
 
