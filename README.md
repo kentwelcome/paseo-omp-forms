@@ -1,8 +1,21 @@
 # OMP Forms
 
-Planned Paseo provider fork that lets a user answer an OMP radio question in chat and returns the selected machine value to the waiting OMP tool. The provider is not implemented or installed. [Architecture](architecture.md) describes the failure and verification plan.
+OMP Forms adds a native single-choice card for one named radio group sent by the Oh My Pi `ask` tool. The selected value goes back to the waiting tool, not just to the chat timeline. Unsupported forms are canceled instead of leaving OMP waiting.
 
-The proposed **Oh My Pi (Forms)** picker is for new chats. It will not replace the bundled provider or fix existing chats. Until the fix is available, use numbered choices in plain chat and end the turn instead of calling `ask`.
+Choose **Oh My Pi (Forms)** in a new chat. The plugin does not replace the bundled provider, change existing chats, or support arbitrary HTML forms. See [architecture](architecture.md) for the request lifecycle and version baseline.
+
+## Local development
+
+With Node 22.13 or newer and OMP 19.2.1 available:
+
+```sh
+cd plugin
+npm ci
+npm run typecheck
+OMP_FORMS_WIRE=1 npm test -- tests/provider-forms.test.ts tests/provider-permissions.test.ts tests/provider-interrupt.test.ts tests/omp-rpc-protocol.test.ts
+```
+
+`OMP_FORMS_WIRE=1` adds a model-free replay through the installed `omp` binary. For an authorized Desktop test, install the local `plugin/` directory by absolute path, start a fresh **Oh My Pi (Forms)** chat, then test selection and dismissal. Do not restart the daemon.
 
 ## Development workflow
 

@@ -1,0 +1,25 @@
+{
+  "name": "paseo-omp-forms",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.13.0" },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@getpaseo/protocol": "0.17.1",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "parse5": "^7.3.0",
+    "yaml": "^2.9.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "0.17.1",
+    "@oh-my-pi/pi-agent-core": "19.0.0",
+    "@types/node": "^24.10.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.9"
+  }
+}

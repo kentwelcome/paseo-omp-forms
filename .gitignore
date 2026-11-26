@@ -4,6 +4,9 @@
 # Local engineering handoff
 /HANDOFF.md
 
+# Plugin dependencies
+/plugin/node_modules/
+
 # OS metadata
 .DS_Store
 Thumbs.db
