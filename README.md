@@ -13,17 +13,14 @@ OMP Forms shows a selectable card instead. Pick an option and submit it to send 
 
 The plugin supports one group of radio buttons and cancels unsupported forms. It adds a separate **Oh My Pi (Forms)** provider for new chats. It neither replaces the bundled provider nor fixes a chat that is already waiting.
 
-## Try it from source
+## Install from GitHub
 
-Verified with Paseo Desktop 0.17.4 on macOS and OMP 19.2.1. Install `omp` on the machine running the Paseo daemon and make sure it’s on the daemon’s `PATH`. The source setup below uses Node.js 22.13 or newer and npm.
+Verified with Paseo Desktop 0.17.4 on macOS and OMP 19.2.1. Install `omp` on the machine running the Paseo daemon and make sure it’s on the daemon’s `PATH`. Git installation uses Node.js 22.13 or newer and npm on that host.
 
 Paseo plugins run as trusted, unsandboxed code. Enable plugins in **Settings → Plugins** on the target daemon only if you trust the code you’re installing.
 
 ```sh
-git clone https://github.com/kentwelcome/paseo-omp-forms.git
-cd paseo-omp-forms/plugin
-npm ci --ignore-scripts
-paseo plugin install "$PWD"
+paseo plugin install git:kentwelcome/paseo-omp-forms:plugin
 ```
 
 Start a new chat with **Oh My Pi (Forms)**. To try it, send this prompt:
